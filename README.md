@@ -1,2 +1,4 @@
 # Progress
-Push what I have learnt every week
+Push what We have learnt every week
+
+Learn and practice for a brighter future
