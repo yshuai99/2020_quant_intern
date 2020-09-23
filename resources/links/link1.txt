@@ -41,3 +41,6 @@ https://mp.weixin.qq.com/s?__biz=MzU2NDg0OTgyMA==&mid=2247485714&idx=1&sn=58ca99
 
 一文读懂！2020年最全量化策略类别 - FinTech社区的文章 - 知乎
 https://zhuanlan.zhihu.com/p/154361908
+
+常见的十大量化投资策略（附源码） - <em>量化</em>路上的文章 - 知乎
+https://zhuanlan.zhihu.com/p/144243002
