@@ -150,7 +150,7 @@ def getRankedFactors(f,d):
     df=get_fundamentals(g.q,d)
     res=[([0]*len(f)) for i in range(len(df))]
     #把数据填充到刚刚定义的数组里面
-    for i in range (0,len(f)):
+    for i in range (0,len(df)):
         for j in range(0,len(f)):
             res[i][j]=df[f[j]][i]
     #用均值填充空值
