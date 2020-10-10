@@ -52,6 +52,14 @@ def filter(security_list):
         and not current_data[stock].is_st]
 '''
 
+'''
+设置buylist为空列表，不断填充需要购买的股票代码
+股票需满足三个条件：
+    1.已经筛选过一次
+    2.买入：股票成交量突破20日内最高并且股票价格向上突破10日均线
+    3.卖出：成交量创10日内新低或者股价向下突破5日新低
+'''
+
 def market_open(context):
     df = get_fundamentals(query(
         valuation.code, valuation.pe_ratio, valuation.market_cap,valuation.pb_ratio,indicator.eps, indicator.inc_return, indicator.inc_net_profit_annual
@@ -73,17 +81,8 @@ def market_open(context):
     stockset = delisted_filter(stockset)
     stockset = st_filter(stockset)  
 
-
-'''
-设置buylisy为空列表，不断填充需要购买的股票代码
-股票需满足三个条件：
-    1.已经筛选过一次
-    2.买入：股票成交量突破20日内最高并且股票价格向上突破10日均线
-    3.卖出：成交量创10日内新低或者股价向下突破5日新低
-'''
     buylist = []
     for stock in stockset:
-        #设置所需的变量
         close_data = attribute_history(stock, 11, '1d', ['close'])
         volume = attribute_history(stock, 21, '1d', ['volume'])
 
@@ -96,13 +95,11 @@ def market_open(context):
         cur_vol = volume['volume'][-1]
         cur_price = close_data['close'][-1]
 
-        #context.portfolio.positions.keys()获得现在持有的股票代码
+
         sell_list = list(context.portfolio.positions.keys())
-        #如果成交量创10日心底 or 股价向下突破至5日新低
         if (cur_vol < min_vol) or (cur_price < min5):
             stock_sell = stock
             order_target_value(stock_sell, 0) 
-            #如果成交量突破20日内最高 and 股票向上突破10日均线 and 股票不在出售列表中
         elif (cur_vol >= max20_vol) and (cur_price >= max10) and (stock not in sell_list):
             buylist.append(stock)
     if len(buylist)==0: 
@@ -112,7 +109,6 @@ def market_open(context):
     for stock in buylist:
         order_target_value(stock, Cash)
 
-#个股跌幅超过loss值时止损
 def security_stoploss(context,loss=0.1):
     if len(context.portfolio.positions)>0:
         for stock in context.portfolio.positions.keys():
