@@ -15,7 +15,7 @@ def initialize(context):
 
 #设置参数
 def set_params():
-	g.tc=15                  #调仓频率
+	g.tc=30                 #调仓频率
 	g.N=20                   #持仓数目
 
 
@@ -73,9 +73,11 @@ def set_feasible_stocks(context):
 	df = get_fundamentals(query(valuation.code))
 	stockset = list(df['code'])
 	stockset = filter(stockset)
+	return stockset
 
-def market_open(context):
-    return
+def market_open(stockset):
+	print(type(stockset))
+	return
 
 		
 		
