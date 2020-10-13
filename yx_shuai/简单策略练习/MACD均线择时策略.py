@@ -82,7 +82,7 @@ def trade(context):
             DEA = macd_tmp[1]
             MACD = macd_tmp[2]
 
-            # 判断MACD走向
+            #判断MACD走向
             if MACD[-1] > 0 and MACD[-4] < 0:
                 long_list.append(stock)
             elif MACD[-1] < 0 and MACD[-4] > 0:
