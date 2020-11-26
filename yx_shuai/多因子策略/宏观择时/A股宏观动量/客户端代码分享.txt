@@ -1,0 +1,367 @@
+# 导入函数库
+from jqdata import *
+import numpy as np
+import pandas as pd
+import talib as tl
+import pickle
+import datetime
+import tushare as ts
+from six import StringIO
+import warnings
+warnings.filterwarnings('ignore')
+
+# 初始化函数，设定基准等等
+def initialize(context):
+    # 设定沪深300作为基准
+    set_benchmark('000300.XSHG')
+    # 开启动态复权模式(真实价格)
+    set_option('use_real_price', True)
+    # 输出内容到日志 log.info()
+    log.info('初始函数开始运行且全局只运行一次')
+    # 过滤掉order系列API产生的比error级别低的log
+    # log.set_level('order', 'error')
+    set_params()
+    ### 股票相关设定 ###
+    # 股票类每笔交易时的手续费是：买入时佣金万分之三，卖出时佣金万分之三加千分之一印花税, 每笔交易佣金最低扣5块钱
+    set_order_cost(OrderCost(close_tax=0.001, open_commission=0.0003, close_commission=0.0003, min_commission=5), type='stock')
+
+    ## 运行函数（reference_security为运行时间的参考标的；传入的标的只做种类区分，因此传入'000300.XSHG'或'510300.XSHG'是一样的）
+      # 开盘前运行
+    if g.run_monthly == True:
+        run_monthly(before_market_open, monthday=1, time='09:30')
+          # 开盘时运行
+        run_monthly(market_open, monthday=1, time='09:30')
+    else:
+        run_daily(before_market_open, time='open')
+        run_daily(market_open, time='open')
+        
+        
+def set_params():
+    g.n = 3 #移动平均窗口
+    g.bulin_n = 25 #布林带数据长度
+    g.position = 0
+    g.stocks = '000300.XSHG'
+    g.bulin_upper_dev = 1.8 #布林带上限标准差倍数
+    g.bulin_lower_dev = 1.8
+    g.run_monthly = True
+    g.num_date = 90
+    g.reserve_ratio_delay = 120 #存款准备金率取之前数据的周期
+    g.weight = [1,1,2,1,1]  #'monetary','forex','credit','boom','inflation'
+
+## 开盘前运行函数
+def before_market_open(context):
+    # 输出运行时间
+    log.info('函数运行时间(before_market_open)：'+str(context.current_dt.time()))
+    current_day = context.current_dt.day
+    current_month = context.current_dt.month
+    current_year = context.current_dt.year
+    last_month = get_last_month(current_year,current_month,g.n+2)
+    current_date = context.current_dt.date()
+    print(current_date)
+    previous_date = context.previous_date
+    previous_date = datetime.datetime.strftime(previous_date,'%Y-%m-%d')
+    trade_days_one_month = get_trade_days(end_date=current_date,count=g.num_date)
+    trade_days_one_month = datetime_to_str(trade_days_one_month)
+    trade_days_one_month.pop() #将当天值去除
+    ts_data = change_to_tushare_date(trade_days_one_month)
+    #PMI择时
+    pmi = get_PMI(last_month)
+    pmi_position = (pmi['pmi'].rolling(g.n).mean() > pmi['pmi'].rolling(g.n).mean().shift(1))*1
+    pmi_position = pmi_position.values[-1]
+    #print(pmi_position)
+   # SHIBOR利率择时
+    shibor = get_SHIBOR(trade_days_one_month)
+    #一个月利率
+    shibor_1m = shibor[['1m']]
+    shibor_position = bbands_select_time(shibor_1m,'lower')
+    #国债择时
+    gz = get_gz(trade_days_one_month)
+    gz_position = bbands_select_time(gz,'upper')    
+    #企业债择时
+    qyz = get_qyz(trade_days_one_month)
+    qyz_position = bbands_select_time(qyz,'lower')  
+    #M1 - M2同比剪刀差择时
+    money_change = get_M1_M2(last_month)
+    mc_position = (money_change.rolling(g.n).mean() > money_change.rolling(g.n).mean().shift(1)) * 1
+    #M1,M2一般在次月中上旬发布，例如2018年12月11日发布了2018年11月的数据，因此当月的择时需参考上上个月的指标
+    mc_position = mc_position.values[-2]
+
+    #存款准备金率择时
+    reserve_ratio_position = get_reserve_ratio_from_csv(previous_date)
+
+    #社会融资总额择时
+    aggregate_fin = get_aggregate_financing(last_month)
+    aggregate_fin_position = (aggregate_fin.rolling(g.n).mean() > aggregate_fin.rolling(g.n).mean().shift(1))*1
+    aggregate_fin_position = aggregate_fin_position.values[-2]
+    #汇率择时
+    huilv = get_exchange_rate(trade_days_one_month)
+    huilv_position = bbands_select_time(huilv,'lower')
+    print(huilv_position)
+    #通胀指数 PPI - CPI 择时
+    inf = get_inflation_index(last_month)
+    def good_cpi(x):
+        if x<0:
+            y=0.
+        elif x<5.:
+            y=1.
+        else:
+            y=0
+        return y
+    inf_position = (inf.rolling(g.n).mean() < inf.rolling(g.n).mean().shift(1))*1
+    label = (inf.rolling(g.n).mean().apply(good_cpi))
+    inf_position = inf_position * label
+    inf_position = inf_position.values[-2]
+    #货币政策择时指标=利率+期限利差+信用利差
+    #考虑存款准备金率
+    #huobi_position = (shibor_position + gz_position + qyz_position) / 3.0 + 0.3 * reserve_ratio_position
+    #if huobi_position > 1:
+    #   huobi_position = 1
+    huobi_position = (shibor_position + gz_position + qyz_position) / 3.0    
+    print([shibor_position, gz_position, qyz_position])
+    #信贷择时指标 = M1、M2剪刀差 + 社融指标
+    credit_loan_postition = (mc_position + aggregate_fin_position) / 2.0
+    #print([mc_position,aggregate_fin_position])
+
+    #汇总择时指标
+    all_position = [huobi_position,huilv_position,credit_loan_postition,pmi_position,inf_position]
+    print(all_position)
+    all_position = np.array(all_position)
+    weight = np.array(g.weight)
+    position = (all_position * weight).sum()/len(weight)
+    print(position)
+    if position > 0.55:
+        g.position = 1
+    elif position < 0.45:
+        g.position = -1
+    else:
+        g.position = 0
+    print(g.position)
+## 开盘时运行函数
+def market_open(context):
+    previous_date = context.previous_date
+    previous_date = datetime.datetime.strftime(previous_date,'%Y-%m-%d')
+    cash = context.portfolio.available_cash
+    all_cash = context.portfolio.total_value
+    '''
+    if g.position == 1:
+            log.info('开始下单')
+            order_value(g.stocks, cash)
+    else:
+        order_target(g.stocks, 0)
+    '''
+    #大盘止损，上月跌幅超5%则卖出
+    price = get_price(g.stocks,end_date=previous_date, fields=['close'],count=21)['close']
+    pct_change = price.pct_change(20).values[-1]
+
+    if g.position == 1:
+        log.info('开始下单')
+        order_value(g.stocks, cash)
+    # 如果上一时间点价格低于五天平均价, 则空仓卖出
+    elif g.position == 0:
+        order_value(g.stocks, all_cash/2)
+    else:
+        order_target(g.stocks, 0)
+##################################工具函数###################################################
+
+def get_last_month(year,month,n):
+    l = []
+    j = 12
+    r = 0
+    for i in range(n):
+        m = month  - i -1
+        if m < 1:
+            j += 1
+            if j==13:
+                year -= 1
+                j = 1
+                r += 1
+            ml = month + 12*r - i - 1
+            if ml < 10:
+                date = str(year) + '-0' + str(ml)  
+            else:
+                date = str(year) + '-' + str(ml)
+            l.append(date)
+        else:
+            if m < 10:
+                date = str(year) + '-0' + str(m)  
+            else:
+                date = str(year) + '-' + str(m)
+            l.append(date)
+    return l
+
+def datetime_to_str(date_list):
+    l = []
+    for date in date_list:
+        d = datetime.datetime.strftime(date,'%Y-%m-%d')
+        l.append(d)
+    return l
+
+def change_to_tushare_date(date_list):
+    l = []
+    for date in date_list:
+        y = date[:4]
+        m = date[5:7]
+        d = date[8:10]
+        nd = y+m+d
+        l.append(nd)
+    return l
+
+
+#获取PMI数据
+def  get_PMI(month_list):
+    a = macro.MAC_MANUFACTURING_PMI
+    q = query(a.stat_month,a.pmi).filter(a.stat_month.in_(month_list))
+    pmi = macro.run_query(q)
+    return pmi
+
+#获取shibor数据
+def get_SHIBOR(date_list):
+    shibor = pd.read_csv('shibor.csv')
+    shibor = shibor.set_index(shibor.columns[0])
+    shibor = shibor.loc[date_list]
+    shibor = shibor.drop_duplicates()
+    return shibor
+
+#取国债数据
+def get_gz(date_list):
+    gz = pd.read_csv('guozhai_1m_10y_06_19.csv')
+    gz.index = gz[gz.columns[0]]
+    gz['diff'] = gz['10y'] - gz['1m']
+    gz = gz.loc[date_list]
+    return gz[['diff']]
+
+#获取企业债
+def get_qyz(date_list):
+    qyz = pd.read_csv('qiyezhai_1m_06_19.csv')
+    qyz.index = qyz[qyz.columns[0]]
+    qyz = qyz[['1m']]
+    qyz = qyz.loc[date_list]
+    gz = pd.read_csv('guozhai_1m_10y_06_19.csv')
+    gz.index = gz[gz.columns[0]]
+    gz = gz.loc[date_list]
+    qyz['diff'] = qyz['1m'] - gz['1m']
+    return qyz[['diff']]
+
+#获取货币供应量数据
+def get_M1_M2(month_list):
+    m = pd.read_csv('money_supply_05-19.csv')
+    m = m.set_index(m.columns[0])
+    m_select = m.loc[month_list]
+    m_select['diff'] = m_select['m1_yoy'] - m_select['m2_yoy']
+    res = m_select[['diff']]
+    res = res.sort_index()
+    return res
+
+#社会融资规模
+def get_aggregate_financing(month_list):
+    af = pd.read_csv('aggretate_signal_data_02_19.csv')
+    af = af.set_index(af.columns[0])
+    res = af.loc[month_list]
+    res = res.sort_index()
+    return res
+
+
+#汇率数据
+def get_exchange_rate(date_list):
+    er = pd.read_csv('huilv_060101_190331.csv')
+    er = er.set_index(er.columns[0])
+    er = er.loc[date_list]
+    er = er[['收盘']]
+    return er
+
+
+#获取存款准备金率数据
+def get_reserve_ratio_from_csv(last_date):
+    res_tatio = pd.read_csv('required_reserve_ratio.csv')
+    res_tatio = res_tatio.set_index(res_tatio.columns[0])
+    col = 'bigInstitutionsRatioAfter'
+    current = res_tatio.loc[last_date,col]
+    ind = list(res_tatio.index)
+    index = ind.index(last_date)
+    new_index = index - g.reserve_ratio_delay
+    if new_index < 0:
+        print('存款准备金率数据长度不够')
+    else:
+        pre = res_tatio.ix[new_index,col]
+
+    if current < pre:
+        position = 1
+    else:
+        position = 0
+    return position
+
+#获取原数据函数
+def get_reserve_ratio(start_date,end_date):
+    import baostock as bs
+
+    # 登陆系统
+    lg = bs.login()
+    # 获取存款准备金率
+    rs = bs.query_required_reserve_ratio_data(start_date=start_date, end_date=end_date)
+    data_list = []
+    while (rs.error_code == '0') & rs.next():
+        # 获取一条记录，将记录合并在一起
+        data_list.append(rs.get_row_data())
+    result = pd.DataFrame(data_list, columns=rs.fields)
+    # 结果集输出到csv文件
+    #result.to_csv("required_reserve_ratio.csv", encoding="gbk", index=False)
+    # 登出系统
+    bs.logout()
+    result = result.set_index(result.columns[0])
+    days = get_trade_days(start_date=start_date,end_date=end_date)
+    days = [datetime.datetime.strftime(i,'%Y-%m-%d') for i in days]
+    col = result.columns
+    df = pd.DataFrame(index=days,columns=col)
+    for ind in result.index:
+        if ind in days:
+            df.loc[ind,:] = result.loc[ind,:]
+    df = df.fillna(method='ffill').dropna()
+    return df
+
+#获取通胀指数 PPI - CPI
+def get_inflation_index(month_list):
+    inf = pd.read_csv('cpi_ppi_0501_1902.csv')
+    inf = inf.set_index(inf.columns[0])
+    inf = inf.loc[month_list]
+    inf['diff'] = inf['ppi同比'] - inf['cpi同比']
+    inf = inf.sort_index()
+    return inf['diff']
+
+
+
+def bbands_select_time(data,model='up'):
+    col = data.columns[0]
+    upperband,middleband,lowerband = (tl.BBANDS(data[col].values, timeperiod=g.bulin_n, nbdevup=g.bulin_upper_dev, nbdevdn=g.bulin_lower_dev))
+
+    data['BBAND_upper']=upperband
+    data['BBAND_middle']=middleband
+    data['BBAND_lower']=lowerband
+    pre_position = 0
+    data['position'] = 0
+    if model == 'upper':
+        for date in data.index:
+            if data.loc[date,col]<data.loc[date,'BBAND_middle']:
+                data.loc[date,'position']=0
+            elif data.loc[date,col]>data.loc[date,'BBAND_upper']:
+                data.loc[date,'position']=1.0
+            else:
+                data.loc[date,'position']=pre_position
+            pre_position=data.loc[date,'position']
+    elif model == 'lower':
+        for date in data.index:
+            if data.loc[date,col]>data.loc[date,'BBAND_middle']:
+                data.loc[date,'position']=0
+            elif data.loc[date,col]<data.loc[date,'BBAND_lower']:
+                data.loc[date,'position']=1.0
+            else:
+                data.loc[date,'position']=pre_position
+            pre_position=data.loc[date,'position']
+    print(data.tail())
+    if g.run_monthly == True:
+        position = data['position'].values[-20:].mean()
+        #position = data['position'].values[-1]
+    else:
+        position = data['position'].values[-1]
+    #print(data.tail())
+    return position
+    
